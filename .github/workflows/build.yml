@@ -43,7 +43,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             bc bison flex libssl-dev libelf-dev build-essential \
-            git curl ca-certificates cpio kmod lz4 python3 rsync zstd
+            git curl ca-certificates cpio kmod lz4 python3 rsync zstd dwarves
+          pahole --version
 
       - name: Fetch AOSP clang (${{ env.CLANG_VER }}) — sparse checkout, only this one dir
         working-directory: /mnt/work
@@ -95,8 +96,8 @@ jobs:
           $C -e MODVERSIONS -e CFI_CLANG -e MODULE_UNLOAD
           # Export ALL symbols so our external module can link against cfg80211 etc.
           $C -d TRIM_UNUSED_KSYMS
-          # BTF debug info needs a specific pahole that isn't on the runner; we don't need it.
-          $C -d DEBUG_INFO_BTF -d DEBUG_INFO_BTF_MODULES
+          # Keep BTF ON (stock has CONFIG_DEBUG_INFO_BTF_MODULES=y, which affects struct module
+          # and thus the module_layout CRC); pahole is installed so this builds.
           # Force the module vermagic to EXACTLY equal the running kernel's release.
           $C -d LOCALVERSION_AUTO --set-str LOCALVERSION "$KRELEASE"
           # Build the in-tree USB Wi-Fi stack as modules (matched to this kernel).
