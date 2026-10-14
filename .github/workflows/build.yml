@@ -92,6 +92,8 @@ jobs:
           $C -e MODVERSIONS -e CFI_CLANG -e MODULE_UNLOAD
           # Export ALL symbols so our external module can link against cfg80211 etc.
           $C -d TRIM_UNUSED_KSYMS
+          # BTF debug info needs a specific pahole that isn't on the runner; we don't need it.
+          $C -d DEBUG_INFO_BTF -d DEBUG_INFO_BTF_MODULES
           # Force the module vermagic to EXACTLY equal the running kernel's release.
           $C -d LOCALVERSION_AUTO --set-str LOCALVERSION "$KRELEASE"
           # Build the in-tree USB Wi-Fi stack as modules (matched to this kernel).
