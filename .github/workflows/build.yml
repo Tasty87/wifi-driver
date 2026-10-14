@@ -1,0 +1,135 @@
+name: build-wifi-driver
+
+# Builds USB Wi-Fi driver modules matched to this exact phone kernel:
+#   release : 5.15.194-android13-8-00019-gf4321180a397-ab15212794
+#   source  : common-android13-5.15  @ commit f4321180a397 (tag android13-5.15-2025-12)
+#   toolchain: AOSP clang r450784e (x86_64 host -> aarch64 target)
+#
+# Produces, as downloadable artifacts:
+#   * rtl8xxxu.ko + mac80211.ko   <- in-tree mainline driver (try this FIRST, most likely to load)
+#   * 8192eu.ko                   <- out-of-tree vendor driver (monitor mode / injection)
+#
+# Run it from the GitHub website: Actions tab -> this workflow -> "Run workflow".
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      KSHA: f4321180a397
+      KTAG: android13-5.15-2025-12
+      CLANG_VER: clang-r450784e
+      # exact UTS release of the running phone kernel (vermagic must match this)
+      KRELEASE: "-android13-8-00019-gf4321180a397-ab15212794"
+      WORK: /mnt/work
+    steps:
+      - name: Free up disk and make work dir on the big volume
+        run: |
+          set -eux
+          sudo rm -rf /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/lib/android || true
+          sudo mkdir -p "$WORK"
+          sudo chown "$USER":"$USER" "$WORK"
+          df -h / /mnt
+
+      - name: Install build dependencies
+        run: |
+          set -eux
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bc bison flex libssl-dev libelf-dev build-essential \
+            git curl ca-certificates cpio kmod lz4 python3 rsync zstd
+
+      - name: Fetch AOSP clang (${{ env.CLANG_VER }}) — only this one toolchain dir
+        working-directory: /mnt/work
+        run: |
+          set -eux
+          mkdir -p clang
+          curl -L --retry 5 -o clang.tgz \
+            "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/${CLANG_VER}.tar.gz"
+          tar -xzf clang.tgz -C clang
+          rm -f clang.tgz
+          clang/bin/clang --version | head -1
+
+      - name: Clone kernel source and check out the exact commit
+        working-directory: /mnt/work
+        run: |
+          set -eux
+          git clone --filter=blob:none -b android13-5.15 \
+            https://android.googlesource.com/kernel/common kernel
+          cd kernel
+          git checkout "$KSHA" 2>/dev/null \
+            || git checkout "$KTAG" 2>/dev/null \
+            || echo "WARNING: using android13-5.15 branch tip (commit not found)"
+          git --no-pager log -1 --oneline
+
+      - name: Configure kernel (gki_defconfig + build-fit tweaks)
+        working-directory: /mnt/work/kernel
+        run: |
+          set -eux
+          export PATH="$WORK/clang/bin:$PATH"
+          MK="make -j$(nproc) LLVM=1 ARCH=arm64 O=out"
+          mkdir -p out
+          $MK gki_defconfig
+          C="scripts/config --file out/.config"
+          # Thin LTO instead of Full: identical CFI ABI, but fits CI RAM/time.
+          $C -d LTO_CLANG_FULL -e LTO_CLANG_THIN
+          # Keep symbol versioning + CFI (must match the running kernel).
+          $C -e MODVERSIONS -e CFI_CLANG -e MODULE_UNLOAD
+          # Export ALL symbols so our external module can link against cfg80211 etc.
+          $C -d TRIM_UNUSED_KSYMS
+          # Force the module vermagic to EXACTLY equal the running kernel's release.
+          $C -d LOCALVERSION_AUTO --set-str LOCALVERSION "$KRELEASE"
+          # Build the in-tree USB Wi-Fi stack as modules (matched to this kernel).
+          $C -m CFG80211 -m MAC80211 -m RTL8XXXU -e RTL8XXXU_UNTESTED
+          $MK olddefconfig
+          echo "== resulting release string =="
+          cat out/include/config/kernel.release || true
+
+      - name: Build kernel modules (produces Module.symvers + in-tree drivers)
+        working-directory: /mnt/work/kernel
+        run: |
+          set -eux
+          export PATH="$WORK/clang/bin:$PATH"
+          make -j$(nproc) LLVM=1 ARCH=arm64 O=out modules
+          echo "== release =="; cat out/include/config/kernel.release
+          find out -name 'rtl8xxxu.ko' -o -name 'mac80211.ko' -o -name 'cfg80211.ko'
+
+      - name: Build out-of-tree rtl8192eu (vendor driver, monitor mode)
+        working-directory: /mnt/work
+        continue-on-error: true   # in-tree rtl8xxxu is the primary deliverable; this is a bonus
+        run: |
+          set -eux
+          export PATH="$WORK/clang/bin:$PATH"
+          git clone --depth 1 https://github.com/Mange/rtl8192eu-linux-driver.git driver
+          cd driver
+          # Stop the driver Makefile from forcing an x86 target; we pass ARCH/KSRC ourselves.
+          sed -i 's/^CONFIG_PLATFORM_I386_PC = y/CONFIG_PLATFORM_I386_PC = n/' Makefile || true
+          make -j$(nproc) LLVM=1 ARCH=arm64 \
+            KSRC="$WORK/kernel/out" KVER="$(cat "$WORK/kernel/out/include/config/kernel.release")" \
+            modules || echo "rtl8192eu external build failed — rtl8xxxu is still available"
+          find . -name '8192eu.ko' || true
+
+      - name: Collect built modules
+        working-directory: /mnt/work
+        run: |
+          set -eux
+          mkdir -p artifacts
+          cp -v $(find kernel/out -name rtl8xxxu.ko | head -1) artifacts/ || true
+          cp -v $(find kernel/out -name mac80211.ko | head -1) artifacts/ || true
+          cp -v $(find kernel/out -name cfg80211.ko | head -1) artifacts/ || true
+          cp -v $(find driver   -name 8192eu.ko   | head -1) artifacts/ 2>/dev/null || true
+          cp -v kernel/out/Module.symvers artifacts/ || true
+          echo "== module info (vermagic must match the phone) =="
+          for m in artifacts/*.ko; do echo "### $m"; modinfo "$m" | grep -E 'vermagic|name|depends' || true; done
+          ls -la artifacts
+
+      - name: Upload modules
+        uses: actions/upload-artifact@v4
+        with:
+          name: wifi-modules
+          path: /mnt/work/artifacts/*
+          if-no-files-found: error
