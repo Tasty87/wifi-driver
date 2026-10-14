@@ -20,9 +20,11 @@ jobs:
   build:
     runs-on: ubuntu-latest
     env:
-      KSHA: f4321180a397
+      KSHA: f4321180a3973d19b626b3eef51871199e4e1fac
       KTAG: android13-5.15-2025-12
       CLANG_VER: clang-r450784e
+      # exact commit of prebuilts/clang/host/linux-x86 pinned by this kernel's manifest
+      CLANG_SHA: 9f759dee5cdc5f85d076c642a192f6a9232f7058
       # exact UTS release of the running phone kernel (vermagic must match this)
       KRELEASE: "-android13-8-00019-gf4321180a397-ab15212794"
       WORK: /mnt/work
@@ -47,11 +49,17 @@ jobs:
         working-directory: /mnt/work
         run: |
           set -eux
-          # gitiles won't archive a dir this big, so sparse+blobless clone just the one toolchain dir
-          git clone --depth 1 --filter=blob:none --sparse \
-            https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 clang-repo
+          # Fetch only the exact pinned commit, blobless, and check out just the one clang dir.
+          # (Branch tips have pruned r450784e, and gitiles won't archive a dir this big.)
+          git init -q clang-repo
           cd clang-repo
+          git remote add origin https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86
+          git config extensions.partialClone origin
+          git fetch --depth 1 --filter=blob:none origin "$CLANG_SHA"
+          git sparse-checkout init --cone
           git sparse-checkout set "$CLANG_VER"
+          git checkout -q FETCH_HEAD
+          test -x "$CLANG_VER/bin/clang"
           cd ..
           mv "clang-repo/$CLANG_VER" clang
           rm -rf clang-repo
