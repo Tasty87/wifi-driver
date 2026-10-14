@@ -104,16 +104,17 @@ jobs:
           $C -e USB -e USB_SUPPORT -e NEW_LEDS -e LEDS_CLASS -e WLAN -e CFG80211_WEXT
           $C -m CFG80211 -m MAC80211 -m RTL8XXXU -e RTL8XXXU_UNTESTED
           $MK olddefconfig
-          echo "== resulting release string =="
-          cat out/include/config/kernel.release
           echo "== wifi config sanity =="
           grep -E 'CONFIG_(USB|CFG80211|MAC80211|RTL8XXXU)=' out/.config || true
           # Fail early (before a 30-min build) if the driver isn't actually configured.
           grep -q '^CONFIG_RTL8XXXU=m' out/.config || { echo "ERROR: RTL8XXXU not enabled"; exit 1; }
           grep -q '^CONFIG_MAC80211=m' out/.config || { echo "ERROR: MAC80211 not enabled"; exit 1; }
-          # The release string must have NO trailing '+'.
-          case "$(cat out/include/config/kernel.release)" in
+          # Compute the release string now (kernel.release file only exists after a build).
+          REL=$($MK -s kernelrelease 2>/dev/null | tail -1)
+          echo "== release string: [$REL] =="
+          case "$REL" in
             *+) echo "ERROR: release still has trailing +"; exit 1;; esac
+          [ "$REL" = "5.15.194${KRELEASE}" ] || echo "WARNING: release != expected 5.15.194${KRELEASE}"
 
       - name: Build kernel modules (produces Module.symvers + in-tree drivers)
         working-directory: /mnt/work/kernel
