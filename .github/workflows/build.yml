@@ -43,15 +43,18 @@ jobs:
             bc bison flex libssl-dev libelf-dev build-essential \
             git curl ca-certificates cpio kmod lz4 python3 rsync zstd
 
-      - name: Fetch AOSP clang (${{ env.CLANG_VER }}) — only this one toolchain dir
+      - name: Fetch AOSP clang (${{ env.CLANG_VER }}) — sparse checkout, only this one dir
         working-directory: /mnt/work
         run: |
           set -eux
-          mkdir -p clang
-          curl -L --retry 5 -o clang.tgz \
-            "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/${CLANG_VER}.tar.gz"
-          tar -xzf clang.tgz -C clang
-          rm -f clang.tgz
+          # gitiles won't archive a dir this big, so sparse+blobless clone just the one toolchain dir
+          git clone --depth 1 --filter=blob:none --sparse \
+            https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 clang-repo
+          cd clang-repo
+          git sparse-checkout set "$CLANG_VER"
+          cd ..
+          mv "clang-repo/$CLANG_VER" clang
+          rm -rf clang-repo
           clang/bin/clang --version | head -1
 
       - name: Clone kernel source and check out the exact commit
