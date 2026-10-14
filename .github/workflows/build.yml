@@ -102,6 +102,8 @@ jobs:
           # Build the in-tree USB Wi-Fi stack as modules (matched to this kernel).
           # RTL8XXXU depends on USB + MAC80211, so enable those explicitly or olddefconfig drops it.
           $C -e USB -e USB_SUPPORT -e NEW_LEDS -e LEDS_CLASS -e WLAN -e CFG80211_WEXT
+          # The Realtek vendor menu gates rtl8xxxu's Kconfig; gki_defconfig leaves it off.
+          $C -e WLAN_VENDOR_REALTEK
           $C -m CFG80211 -m MAC80211 -m RTL8XXXU -e RTL8XXXU_UNTESTED
           $MK olddefconfig
           echo "== wifi config sanity =="
