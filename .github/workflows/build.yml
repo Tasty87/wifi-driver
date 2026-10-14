@@ -102,7 +102,9 @@ jobs:
           $C -d LOCALVERSION_AUTO --set-str LOCALVERSION "$KRELEASE"
           # Build the in-tree USB Wi-Fi stack as modules (matched to this kernel).
           # RTL8XXXU depends on USB + MAC80211, so enable those explicitly or olddefconfig drops it.
-          $C -e USB -e USB_SUPPORT -e NEW_LEDS -e LEDS_CLASS -e WLAN -e CFG80211_WEXT
+          # NOTE: do NOT enable CFG80211_WEXT — stock kernel has it OFF; enabling it changes
+          # struct wireless_dev and breaks cfg80211 symbol CRCs vs the running kernel.
+          $C -e USB -e USB_SUPPORT -e NEW_LEDS -e LEDS_CLASS -e WLAN
           # The Realtek vendor menu gates rtl8xxxu's Kconfig; gki_defconfig leaves it off.
           $C -e WLAN_VENDOR_REALTEK
           $C -m CFG80211 -m MAC80211 -m RTL8XXXU -e RTL8XXXU_UNTESTED
@@ -138,9 +140,10 @@ jobs:
           cd driver
           # Stop the driver Makefile from forcing an x86 target; we pass ARCH/KSRC ourselves.
           sed -i 's/^CONFIG_PLATFORM_I386_PC = y/CONFIG_PLATFORM_I386_PC = n/' Makefile || true
-          make -j$(nproc) LLVM=1 ARCH=arm64 \
+          # With the x86 platform off, the driver can't detect endianness; our target is little-endian.
+          make -j$(nproc) LLVM=1 ARCH=arm64 KCFLAGS="-DCONFIG_LITTLE_ENDIAN" \
             KSRC="$WORK/kernel/out" KVER="$(cat "$WORK/kernel/out/include/config/kernel.release")" \
-            modules || echo "rtl8192eu external build failed — rtl8xxxu is still available"
+            modules || echo "rtl8192eu external build failed"
           find . -name '8192eu.ko' || true
 
       - name: Collect built modules
