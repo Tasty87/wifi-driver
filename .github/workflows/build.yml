@@ -29,6 +29,9 @@ jobs:
       KRELEASE: "-android13-8-00019-gf4321180a397-ab15212794"
       WORK: /mnt/work
     steps:
+      - name: Checkout (brings device.config into the runner)
+        uses: actions/checkout@v4
+
       - name: Free up disk and make work dir on the big volume
         run: |
           set -eux
@@ -83,9 +86,9 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: /mnt/work/kernel/out
-          key: kout-${{ env.KSHA }}-btf-thinlto-v1
+          key: kout-${{ env.KSHA }}-devcfg-v2
 
-      - name: Configure kernel (gki_defconfig + build-fit tweaks)
+      - name: Configure kernel (use the DEVICE'S exact config for ABI match)
         if: steps.kcache.outputs.cache-hit != 'true'
         working-directory: /mnt/work/kernel
         run: |
@@ -93,36 +96,22 @@ jobs:
           export PATH="$WORK/clang/bin:$PATH"
           MK="make -j$(nproc) LLVM=1 ARCH=arm64 O=out"
           mkdir -p out
-          # Empty .scmversion stops setlocalversion appending a "+" to the release string,
-          # so module vermagic matches the running kernel exactly (no trailing '+').
-          : > .scmversion
-          $MK gki_defconfig
+          : > .scmversion   # no trailing '+' on the release string
+          # Start from the device's EXACT running config so cfg80211's struct layouts — and thus
+          # every exported-symbol CRC — match the running kernel. This is what makes the external
+          # driver's __versions agree with the loaded cfg80211.
+          cp "$GITHUB_WORKSPACE/device.config" out/.config
           C="scripts/config --file out/.config"
-          # Thin LTO instead of Full: identical CFI ABI, but fits CI RAM/time.
-          $C -d LTO_CLANG_FULL -e LTO_CLANG_THIN
-          # Keep symbol versioning + CFI (must match the running kernel).
-          $C -e MODVERSIONS -e CFI_CLANG -e MODULE_UNLOAD
-          # Export ALL symbols so our external module can link against cfg80211 etc.
+          # Disable ksym trimming (so our cfg80211 exports everything the driver links against)
+          # and drop the build-host-specific whitelist path. Neither changes CRC *values*.
           $C -d TRIM_UNUSED_KSYMS
-          # Keep BTF ON (stock has CONFIG_DEBUG_INFO_BTF_MODULES=y, which affects struct module
-          # and thus the module_layout CRC); pahole is installed so this builds.
-          # Force the module vermagic to EXACTLY equal the running kernel's release.
+          sed -i '/CONFIG_UNUSED_KSYMS_WHITELIST/d' out/.config
+          # Thin LTO to fit CI RAM/time (CRC-neutral). Keep BTF/CFI/MODVERSIONS exactly as stock.
+          $C -d LTO_CLANG_FULL -e LTO_CLANG_THIN
+          # Exact vermagic (no trailing '+').
           $C -d LOCALVERSION_AUTO --set-str LOCALVERSION "$KRELEASE"
-          # Build the in-tree USB Wi-Fi stack as modules (matched to this kernel).
-          # RTL8XXXU depends on USB + MAC80211, so enable those explicitly or olddefconfig drops it.
-          # NOTE: do NOT enable CFG80211_WEXT — stock kernel has it OFF; enabling it changes
-          # struct wireless_dev and breaks cfg80211 symbol CRCs vs the running kernel.
-          $C -e USB -e USB_SUPPORT -e NEW_LEDS -e LEDS_CLASS -e WLAN
-          # The Realtek vendor menu gates rtl8xxxu's Kconfig; gki_defconfig leaves it off.
-          $C -e WLAN_VENDOR_REALTEK
-          $C -m CFG80211 -m MAC80211 -m RTL8XXXU -e RTL8XXXU_UNTESTED
           $MK olddefconfig
-          echo "== wifi config sanity =="
-          grep -E 'CONFIG_(USB|CFG80211|MAC80211|RTL8XXXU)=' out/.config || true
-          # Fail early (before a 30-min build) if the driver isn't actually configured.
-          grep -q '^CONFIG_RTL8XXXU=m' out/.config || { echo "ERROR: RTL8XXXU not enabled"; exit 1; }
-          grep -q '^CONFIG_MAC80211=m' out/.config || { echo "ERROR: MAC80211 not enabled"; exit 1; }
-          # Compute the release string now (kernel.release file only exists after a build).
+          grep -q '^CONFIG_CFG80211=' out/.config || { echo "ERROR: CFG80211 missing"; exit 1; }
           REL=$($MK -s kernelrelease 2>/dev/null | tail -1)
           echo "== release string: [$REL] =="
           case "$REL" in
@@ -144,7 +133,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: /mnt/work/kernel/out
-          key: kout-${{ env.KSHA }}-btf-thinlto-v1
+          key: kout-${{ env.KSHA }}-devcfg-v2
 
       - name: Build out-of-tree rtl8192eu (vendor driver, monitor mode)
         working-directory: /mnt/work
@@ -168,9 +157,11 @@ jobs:
           perl -pi -e 's/\(LINUX_VERSION_CODE >= KERNEL_VERSION\(6, 3, 0\)\) && \(LINUX_VERSION_CODE < KERNEL_VERSION\(6, 9, 0\)\)/1/g' "$F"
           # wireless_dev.current_bss -> .connected (ml 5.19.2)
           perl -pi -e 's/LINUX_VERSION_CODE >= KERNEL_VERSION\(5,19, 2\)/1/g' "$F"
-          # The driver uses filp_open/kernel_read, which live in a guarded VFS symbol namespace;
-          # a module must declare the import or modpost rejects it.
-          echo 'MODULE_IMPORT_NS(VFS_internal_I_am_really_a_filesystem_and_am_NOT_a_driver);' >> os_dep/linux/os_intfs.c
+          # GKI does NOT export filp_open/kernel_read to modules (err -2 at load). The driver only
+          # uses them for optional PHY-param/efuse/PNO files; firmware itself is embedded. Stub the
+          # file reads so the module references no unexported VFS symbols.
+          perl -pi -e 's/filp_open\s*\([^)]*\)/ERR_PTR(-ENOENT)/g' os_dep/osdep_service.c core/rtw_wlan_util.c
+          perl -pi -e 's/\bkernel_read\s*\([^)]*\)/(-ENOENT)/g; s/__vfs_read\s*\([^)]*\)/(-ENOENT)/g' os_dep/osdep_service.c
 
           # Supply flags the disabled x86 platform block would have set:
           #  endianness, cfg80211 build mode; -Wno-error (GKI CONFIG_WERROR=y vs old driver warnings).
