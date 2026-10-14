@@ -84,6 +84,9 @@ jobs:
           export PATH="$WORK/clang/bin:$PATH"
           MK="make -j$(nproc) LLVM=1 ARCH=arm64 O=out"
           mkdir -p out
+          # Empty .scmversion stops setlocalversion appending a "+" to the release string,
+          # so module vermagic matches the running kernel exactly (no trailing '+').
+          : > .scmversion
           $MK gki_defconfig
           C="scripts/config --file out/.config"
           # Thin LTO instead of Full: identical CFI ABI, but fits CI RAM/time.
@@ -97,10 +100,20 @@ jobs:
           # Force the module vermagic to EXACTLY equal the running kernel's release.
           $C -d LOCALVERSION_AUTO --set-str LOCALVERSION "$KRELEASE"
           # Build the in-tree USB Wi-Fi stack as modules (matched to this kernel).
+          # RTL8XXXU depends on USB + MAC80211, so enable those explicitly or olddefconfig drops it.
+          $C -e USB -e USB_SUPPORT -e NEW_LEDS -e LEDS_CLASS -e WLAN -e CFG80211_WEXT
           $C -m CFG80211 -m MAC80211 -m RTL8XXXU -e RTL8XXXU_UNTESTED
           $MK olddefconfig
           echo "== resulting release string =="
-          cat out/include/config/kernel.release || true
+          cat out/include/config/kernel.release
+          echo "== wifi config sanity =="
+          grep -E 'CONFIG_(USB|CFG80211|MAC80211|RTL8XXXU)=' out/.config || true
+          # Fail early (before a 30-min build) if the driver isn't actually configured.
+          grep -q '^CONFIG_RTL8XXXU=m' out/.config || { echo "ERROR: RTL8XXXU not enabled"; exit 1; }
+          grep -q '^CONFIG_MAC80211=m' out/.config || { echo "ERROR: MAC80211 not enabled"; exit 1; }
+          # The release string must have NO trailing '+'.
+          case "$(cat out/include/config/kernel.release)" in
+            *+) echo "ERROR: release still has trailing +"; exit 1;; esac
 
       - name: Build kernel modules (produces Module.symvers + in-tree drivers)
         working-directory: /mnt/work/kernel
