@@ -111,7 +111,8 @@ jobs:
           # Exact vermagic (no trailing '+').
           $C -d LOCALVERSION_AUTO --set-str LOCALVERSION "$KRELEASE"
           $MK olddefconfig
-          grep -q '^CONFIG_CFG80211=' out/.config || { echo "ERROR: CFG80211 missing"; exit 1; }
+          # NB: device.config has CONFIG_CFG80211 unset on purpose — the real cfg80211 is a
+          # vendor_dlkm module, not a GKI one. We feed its CRCs in via KBUILD_EXTRA_SYMBOLS.
           REL=$($MK -s kernelrelease 2>/dev/null | tail -1)
           echo "== release string: [$REL] =="
           case "$REL" in
@@ -165,8 +166,12 @@ jobs:
 
           # Supply flags the disabled x86 platform block would have set:
           #  endianness, cfg80211 build mode; -Wno-error (GKI CONFIG_WERROR=y vs old driver warnings).
+          # KBUILD_EXTRA_SYMBOLS supplies the REAL cfg80211 symbol CRCs extracted from the
+          # device's vendor_dlkm cfg80211.ko, so the driver's __versions match the loaded module
+          # (core/vmlinux CRCs come from the GKI build's Module.symvers).
           make -j$(nproc) LLVM=1 ARCH=arm64 \
             KCFLAGS="-DCONFIG_LITTLE_ENDIAN -DCONFIG_IOCTL_CFG80211 -DRTW_USE_CFG80211_STA_EVENT -Wno-error" \
+            KBUILD_EXTRA_SYMBOLS="$GITHUB_WORKSPACE/cfg80211.symvers" \
             KSRC="$WORK/kernel/out" KVER="$(cat "$WORK/kernel/out/include/config/kernel.release")" \
             modules || echo "rtl8192eu external build failed"
           find . -name '8192eu.ko' || true
