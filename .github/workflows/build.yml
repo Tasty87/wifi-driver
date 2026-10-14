@@ -168,6 +168,9 @@ jobs:
           perl -pi -e 's/\(LINUX_VERSION_CODE >= KERNEL_VERSION\(6, 3, 0\)\) && \(LINUX_VERSION_CODE < KERNEL_VERSION\(6, 9, 0\)\)/1/g' "$F"
           # wireless_dev.current_bss -> .connected (ml 5.19.2)
           perl -pi -e 's/LINUX_VERSION_CODE >= KERNEL_VERSION\(5,19, 2\)/1/g' "$F"
+          # The driver uses filp_open/kernel_read, which live in a guarded VFS symbol namespace;
+          # a module must declare the import or modpost rejects it.
+          echo 'MODULE_IMPORT_NS(VFS_internal_I_am_really_a_filesystem_and_am_NOT_a_driver);' >> os_dep/linux/os_intfs.c
 
           # Supply flags the disabled x86 platform block would have set:
           #  endianness, cfg80211 build mode; -Wno-error (GKI CONFIG_WERROR=y vs old driver warnings).
