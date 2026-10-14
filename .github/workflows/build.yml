@@ -141,7 +141,8 @@ jobs:
           # Stop the driver Makefile from forcing an x86 target; we pass ARCH/KSRC ourselves.
           sed -i 's/^CONFIG_PLATFORM_I386_PC = y/CONFIG_PLATFORM_I386_PC = n/' Makefile || true
           # With the x86 platform off, the driver can't detect endianness; our target is little-endian.
-          make -j$(nproc) LLVM=1 ARCH=arm64 KCFLAGS="-DCONFIG_LITTLE_ENDIAN" \
+          # -Wno-error: GKI sets CONFIG_WERROR=y, but this old vendor driver trips clang warnings.
+          make -j$(nproc) LLVM=1 ARCH=arm64 KCFLAGS="-DCONFIG_LITTLE_ENDIAN -Wno-error" \
             KSRC="$WORK/kernel/out" KVER="$(cat "$WORK/kernel/out/include/config/kernel.release")" \
             modules || echo "rtl8192eu external build failed"
           find . -name '8192eu.ko' || true
